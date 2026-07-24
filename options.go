@@ -6,7 +6,7 @@ package dcache
 import "time"
 
 const (
-	defaultPort             = 9000
+	defaultPort             = 9065
 	defaultChunkSize        = 32 * 1024 * 1024 // 32 MiB, matching Tachyon production default
 	defaultMaxConnsPerSvr   = 64
 	defaultDialTimeout      = 5 * time.Second
