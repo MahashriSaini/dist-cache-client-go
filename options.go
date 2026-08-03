@@ -34,6 +34,7 @@ type clientConfig struct {
 	maxParallelOps   int
 	virtualNodes     int
 	socketBufSize    int
+	verifyChecksum   bool
 }
 
 func defaultConfig() *clientConfig {
@@ -120,6 +121,12 @@ func WithVirtualNodes(n int) Option {
 // 0 uses the system default. Larger values improve throughput on high-bandwidth links.
 func WithSocketBufferSize(bytes int) Option {
 	return func(c *clientConfig) { c.socketBufSize = bytes }
+}
+
+// WithChecksumVerification enables per-chunk CRC32 checksums on uploads and
+// validates them on downloads. Chunks without checksum metadata remain readable.
+func WithChecksumVerification(enable bool) Option {
+	return func(c *clientConfig) { c.verifyChecksum = enable }
 }
 
 // uploadConfig holds per-upload options.

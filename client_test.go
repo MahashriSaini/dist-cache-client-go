@@ -27,6 +27,7 @@ type mockServer struct {
 	addr     string
 	mu       sync.Mutex
 	store    map[string][]byte // cacheKey -> data
+	metadata map[string]map[string][]byte
 	attrs    map[string]*pb.FileAttribute
 	locks    map[string]bool // cacheKey -> locked
 	handler  func(req *pb.Request, data []byte) (proto.Message, []byte)
@@ -42,6 +43,7 @@ func newMockServer(t *testing.T) *mockServer {
 		listener: l,
 		addr:     l.Addr().String(),
 		store:    make(map[string][]byte),
+		metadata: make(map[string]map[string][]byte),
 		attrs:    make(map[string]*pb.FileAttribute),
 		locks:    make(map[string]bool),
 	}
@@ -125,6 +127,7 @@ func (s *mockServer) defaultHandler(req *pb.Request, uploadData []byte) (proto.M
 	switch p := req.Payload.(type) {
 	case *pb.Request_Uploadrequest:
 		s.store[p.Uploadrequest.Filename] = append([]byte(nil), uploadData...)
+		s.metadata[p.Uploadrequest.Filename] = protoToByteMap(p.Uploadrequest.Metadata)
 		return &pb.UploadResponse{Result: pb.UploadResponse_SUCCESS}, nil
 
 	case *pb.Request_Downloadrequest:
@@ -148,6 +151,7 @@ func (s *mockServer) defaultHandler(req *pb.Request, uploadData []byte) (proto.M
 		return &pb.DownloadResponse{
 			Result:   pb.DownloadResponse_SUCCESS,
 			Filesize: uint64(len(data)),
+			Metadata: s.metadata[p.Downloadrequest.Filename],
 		}, data
 
 	case *pb.Request_Deleterequest:
@@ -195,6 +199,12 @@ func (s *mockServer) close() {
 	}
 }
 
+type sliceWriterAt []byte
+
+func (s sliceWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	return copy(s[off:], p), nil
+}
+
 // --- Client integration tests with mock server ---
 
 func newTestClient(t *testing.T, server *mockServer) *Client {
@@ -236,6 +246,89 @@ func TestUploadDownloadRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, data, buf.Bytes())
 	assert.Equal(t, int64(len(data)), meta.Size)
+}
+
+func TestChecksumRoundTrip(t *testing.T) {
+	srv := newMockServer(t)
+	defer srv.close()
+	client, err := New(
+		WithServerList([]string{srv.addr}),
+		WithCachePrefix("test/container"),
+		WithChunkSize(1024),
+		WithChecksumVerification(true),
+	)
+	require.NoError(t, err)
+	defer client.Close()
+
+	data := bytes.Repeat([]byte("checksummed"), 300)
+	require.NoError(t, client.Upload(context.Background(), "file.bin", "", bytes.NewReader(data), int64(len(data))))
+
+	var downloaded bytes.Buffer
+	meta, err := client.DownloadWithSize(context.Background(), "file.bin", int64(len(data)), &downloaded)
+	require.NoError(t, err)
+	assert.Equal(t, data, downloaded.Bytes())
+	assert.Equal(t, int64(len(data)), meta.Size)
+
+	srv.mu.Lock()
+	for key := range srv.store {
+		srv.store[key][0] ^= 0xff
+		break
+	}
+	srv.mu.Unlock()
+
+	downloaded.Reset()
+	_, err = client.DownloadWithSize(context.Background(), "file.bin", int64(len(data)), &downloaded)
+	assert.ErrorIs(t, err, ErrChecksumMismatch)
+}
+
+func TestChecksumMetadataDoesNotMutateCallerMetadata(t *testing.T) {
+	metadata := map[string][]byte{"user-key": []byte("value")}
+	result := metadataWithChecksum(metadata, []byte("data"))
+
+	assert.Equal(t, map[string][]byte{"user-key": []byte("value")}, metadata)
+	assert.Contains(t, result, checksumMetadataKey)
+}
+
+func TestChecksumMismatchIsRecoverableInPartialDownload(t *testing.T) {
+	srv := newMockServer(t)
+	defer srv.close()
+	client, err := New(
+		WithServerList([]string{srv.addr}),
+		WithCachePrefix("test/container"),
+		WithChunkSize(1024),
+		WithChecksumVerification(true),
+	)
+	require.NoError(t, err)
+	defer client.Close()
+
+	data := bytes.Repeat([]byte("checksummed"), 300)
+	require.NoError(t, client.Upload(context.Background(), "file.bin", "", bytes.NewReader(data), int64(len(data))))
+
+	srv.mu.Lock()
+	var corruptedKey string
+	for key := range srv.store {
+		srv.store[key][0] ^= 0xff
+		corruptedKey = key
+		break
+	}
+	srv.mu.Unlock()
+	require.NotEmpty(t, corruptedKey)
+
+	out := make([]byte, len(data))
+	errCh, wait, err := client.DownloadWithSizePartial(context.Background(), "file.bin", "", int64(len(data)), sliceWriterAt(out))
+	require.NoError(t, err)
+
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- wait() }()
+
+	var chunkErrs []ChunkError
+	for ce := range errCh {
+		chunkErrs = append(chunkErrs, ce)
+	}
+	require.NoError(t, <-waitErr)
+
+	require.Len(t, chunkErrs, 1)
+	assert.ErrorIs(t, chunkErrs[0].Err, ErrChecksumMismatch)
 }
 
 func TestUploadDownloadChunk(t *testing.T) {

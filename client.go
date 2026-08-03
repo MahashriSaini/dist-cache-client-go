@@ -16,6 +16,7 @@ package dcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -180,7 +181,7 @@ func (c *Client) DownloadWithSizePartial(ctx context.Context, filename, etag str
 			n, _, dlErr := c.downloadSingleChunkToBuffer(ctx, plan, buf, dcfg)
 			if dlErr != nil {
 				c.putBuffer(buf)
-				if dlErr == ErrNotFoundGotLock || dlErr == ErrNotFoundAlreadyLocked || dlErr == ErrNotFound || IsRecoverableNetErr(dlErr) {
+				if errors.Is(dlErr, ErrNotFoundGotLock) || errors.Is(dlErr, ErrNotFoundAlreadyLocked) || errors.Is(dlErr, ErrNotFound) || errors.Is(dlErr, ErrChecksumMismatch) || IsRecoverableNetErr(dlErr) {
 					// Recoverable miss — send to caller for handling
 					chunkErrCh <- ChunkError{
 						Offset: plan.offset,

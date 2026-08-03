@@ -22,6 +22,8 @@ import dcache "github.com/nearora-msft/dist-cache-client-go"
 client, err := dcache.New(
     dcache.WithDiscoveryURL("http://discovery.example.com"),
     dcache.WithChunkSize(16 * 1024 * 1024),
+    // Store and validate a CRC32 checksum for every chunk.
+    dcache.WithChecksumVerification(true),
 )
 if err != nil {
     log.Fatal(err)
@@ -36,12 +38,12 @@ Stable entry points consumed by callers:
 - `New(opts ...Option) (*Client, error)`
 - `Option` constructors: `WithDiscoveryURL`, `WithK8sDiscovery`,
   `WithServerList`, `WithPort`, `WithChunkSize`, `WithAuth`, `WithCachePrefix`,
-  `WithMaxConnsPerServer`, `WithDiscoveryRefresh`
+    `WithMaxConnsPerServer`, `WithDiscoveryRefresh`, `WithChecksumVerification`
 - Per-call options: `UploadOption` (`WithIgnoreLock`, `WithGroupID`,
   `WithMetadata`, `WithTTL`), `DownloadOption` (`WithLock`)
 - Result/error types: `ChunkError`, `FileAttr`, `FileAttrEntry`,
   `ErrNotFound`, `ErrNotFoundGotLock`, `ErrNotFoundAlreadyLocked`,
-  `IsRecoverableNetErr`
+    `ErrChecksumMismatch`, `IsRecoverableNetErr`
 
 Anything not listed above is implementation detail and may change without
 notice.
