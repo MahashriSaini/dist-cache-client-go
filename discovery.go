@@ -166,12 +166,7 @@ func (d *discovery) discoverViaK8sDNS(service, namespace string, port int) ([]st
 	svcDNS := fmt.Sprintf("%s.%s.svc.cluster.local", service, namespace)
 	_, addrs, err := net.LookupSRV("", "", svcDNS)
 	if err == nil && len(addrs) > 0 {
-		servers := make([]string, 0, len(addrs))
-		for _, a := range addrs {
-			servers = append(servers, fmt.Sprintf("%s:%d", strings.TrimSuffix(a.Target, "."), port))
-		}
-		sort.Strings(servers)
-		return servers, nil
+		return serversFromSRV(addrs), nil
 	}
 
 	// Fall back to A record lookup
@@ -186,6 +181,15 @@ func (d *discovery) discoverViaK8sDNS(service, namespace string, port int) ([]st
 	}
 	sort.Strings(servers)
 	return servers, nil
+}
+
+func serversFromSRV(addrs []*net.SRV) []string {
+	servers := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		servers = append(servers, fmt.Sprintf("%s:%d", strings.TrimSuffix(addr.Target, "."), addr.Port))
+	}
+	sort.Strings(servers)
+	return servers
 }
 
 // refreshLoop periodically re-discovers the server list.

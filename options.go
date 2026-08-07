@@ -71,7 +71,7 @@ func WithK8sDiscovery(service, namespace string) Option {
 	}
 }
 
-// WithPort sets the server port (default 9000).
+// WithPort sets the fallback server port (default 9065).
 func WithPort(port int) Option {
 	return func(c *clientConfig) { c.port = port }
 }
