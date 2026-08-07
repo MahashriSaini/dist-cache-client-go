@@ -24,6 +24,7 @@ var (
 	ErrNoServers             = errors.New("dcache: no servers available")
 	ErrConnectionFailed      = errors.New("dcache: connection failed")
 	ErrClosed                = errors.New("dcache: client closed")
+	ErrChecksumMismatch      = errors.New("dcache: checksum mismatch")
 )
 
 // IsRecoverableNetErr returns true if the error is a network timeout or

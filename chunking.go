@@ -133,6 +133,11 @@ func (c *Client) uploadSingleChunk(ctx context.Context, plan chunkPlan, data []b
 		return err
 	}
 
+	metadata := ucfg.metadata
+	if c.cfg.verifyChecksum {
+		metadata = metadataWithChecksum(metadata, data)
+	}
+
 	req := &pb.Request{
 		Payload: &pb.Request_Uploadrequest{
 			Uploadrequest: &pb.UploadRequest{
@@ -140,7 +145,7 @@ func (c *Client) uploadSingleChunk(ctx context.Context, plan chunkPlan, data []b
 				Filesize:      uint64(len(data)),
 				Ignorelock:    ucfg.ignoreLock,
 				Expiryseconds: ucfg.ttlSeconds,
-				Metadata:      byteMapToProto(ucfg.metadata),
+				Metadata:      byteMapToProto(metadata),
 				Groupid:       ucfg.groupID,
 			},
 		},
@@ -174,8 +179,22 @@ func (c *Client) downloadChunked(ctx context.Context, filePath, etag string, fil
 		return &FileMetadata{Size: 0}, nil
 	}
 
-	// For single chunk, write directly (enables splice)
+	// For single chunk, write directly (enables splice) unless validation
+	// requires buffering the complete chunk before exposing it to the writer.
 	if len(plans) == 1 {
+		if c.cfg.verifyChecksum {
+			buf := c.getBuffer()
+			defer c.putBuffer(buf)
+			n, metadata, err := c.downloadSingleChunkToBuffer(ctx, plans[0], buf, dcfg)
+			if err != nil {
+				return nil, err
+			}
+			written, err := w.Write(buf[:n])
+			if err != nil {
+				return nil, fmt.Errorf("write chunk: %w", err)
+			}
+			return &FileMetadata{Size: int64(written), Metadata: metadata}, nil
+		}
 		return c.downloadSingleChunkToWriter(ctx, plans[0], w, dcfg)
 	}
 
@@ -384,7 +403,13 @@ func (c *Client) downloadSingleChunkToBuffer(ctx context.Context, plan chunkPlan
 	}
 
 	c.connMgr.putConn(cn)
-	return dataSize, protoToByteMap(resp.Metadata), nil
+	metadata := protoToByteMap(resp.Metadata)
+	if c.cfg.verifyChecksum {
+		if err := validateChecksum(buf[:dataSize], metadata); err != nil {
+			return 0, nil, fmt.Errorf("download chunk %s: %w", plan.cacheKey, err)
+		}
+	}
+	return dataSize, metadata, nil
 }
 
 // Helper: convert upload response result to error.
