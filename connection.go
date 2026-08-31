@@ -5,10 +5,12 @@ package dcache
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -143,15 +145,17 @@ type connPool struct {
 	maxConns  int
 	dialTO    time.Duration
 	sockBufSz int // SO_RCVBUF/SO_SNDBUF size (0 = system default)
+	resolver  *net.Resolver
 }
 
-func newConnPool(addr string, maxConns int, dialTimeout time.Duration, sockBufSize int) *connPool {
+func newConnPool(addr string, maxConns int, dialTimeout time.Duration, sockBufSize int, resolver *net.Resolver) *connPool {
 	return &connPool{
 		addr:      addr,
 		conns:     make([]*conn, 0, maxConns),
 		maxConns:  maxConns,
 		dialTO:    dialTimeout,
 		sockBufSz: sockBufSize,
+		resolver:  resolver,
 	}
 }
 
@@ -189,7 +193,8 @@ func (p *connPool) discard(c *conn) {
 }
 
 func (p *connPool) dial() (*conn, error) {
-	nc, err := net.DialTimeout("tcp", p.addr, p.dialTO)
+	dialer := net.Dialer{Timeout: p.dialTO, Resolver: p.resolver}
+	nc, err := dialer.Dial("tcp", p.addr)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrConnectionFailed, p.addr, err)
 	}
@@ -230,14 +235,16 @@ type connManager struct {
 	maxConns  int
 	dialTO    time.Duration
 	sockBufSz int
+	resolver  *net.Resolver
 }
 
-func newConnManager(maxConnsPerServer int, dialTimeout time.Duration, sockBufSize int) *connManager {
+func newConnManager(maxConnsPerServer int, dialTimeout time.Duration, sockBufSize int, resolver *net.Resolver) *connManager {
 	return &connManager{
 		pools:     make(map[string]*connPool),
 		maxConns:  maxConnsPerServer,
 		dialTO:    dialTimeout,
 		sockBufSz: sockBufSize,
+		resolver:  resolver,
 	}
 }
 
@@ -251,7 +258,7 @@ func (m *connManager) getConn(addr string) (*conn, error) {
 		m.mu.Lock()
 		pool, ok = m.pools[addr]
 		if !ok {
-			pool = newConnPool(addr, m.maxConns, m.dialTO, m.sockBufSz)
+			pool = newConnPool(addr, m.maxConns, m.dialTO, m.sockBufSz, m.resolver)
 			m.pools[addr] = pool
 		}
 		m.mu.Unlock()
@@ -289,4 +296,24 @@ func (m *connManager) closeAll() {
 		pool.closeAll()
 	}
 	m.pools = make(map[string]*connPool)
+}
+
+// dnsResolver builds a *net.Resolver that sends all queries to the
+// given DNS server. Returns nil (use the system resolver) when server is empty.
+func dnsResolver(server string) *net.Resolver {
+	if server == "" {
+		return nil
+	}
+
+	endpoint := server
+	if _, _, err := net.SplitHostPort(server); err != nil {
+		endpoint = net.JoinHostPort(strings.Trim(server, "[]"), "53")
+	}
+
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, endpoint)
+		},
+	}
 }

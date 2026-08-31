@@ -16,6 +16,7 @@ const (
 	defaultVirtualNodes     = 750
 	defaultMaxMsgSize       = 10 * 1024 * 1024 // 10 MB protobuf message limit
 	defaultSocketBufSize    = 0                // 0 = kernel auto-tune (best when host tcp_rmem is tuned)
+	defaultDNSServer        = "10.0.0.10"
 )
 
 // clientConfig holds all client configuration.
@@ -24,6 +25,7 @@ type clientConfig struct {
 	discoveryURL     string
 	k8sService       string
 	k8sNamespace     string
+	dnsServer        string
 	port             int
 	chunkSize        int64
 	cachePrefix      string
@@ -48,6 +50,7 @@ func defaultConfig() *clientConfig {
 		maxParallelOps:   defaultMaxParallelOps,
 		virtualNodes:     defaultVirtualNodes,
 		socketBufSize:    defaultSocketBufSize,
+		dnsServer:        defaultDNSServer,
 	}
 }
 
@@ -70,6 +73,13 @@ func WithK8sDiscovery(service, namespace string) Option {
 		c.k8sService = service
 		c.k8sNamespace = namespace
 	}
+}
+
+// WithDNSServer routes all DNS lookups made by this client (discovery and TCP
+// dialing) to the given DNS server instead of the system resolver. Accepts an
+// IP address or host:port; port 53 is assumed when no port is given.
+func WithDNSServer(server string) Option {
+	return func(c *clientConfig) { c.dnsServer = server }
 }
 
 // WithPort sets the fallback server port (default 9065).

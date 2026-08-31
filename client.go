@@ -46,7 +46,7 @@ func New(opts ...Option) (*Client, error) {
 		o(cfg)
 	}
 
-	connMgr := newConnManager(cfg.maxConnsPerSvr, cfg.dialTimeout, cfg.socketBufSize)
+	connMgr := newConnManager(cfg.maxConnsPerSvr, cfg.dialTimeout, cfg.socketBufSize, dnsResolver(cfg.dnsServer))
 
 	disc, err := newDiscovery(cfg, connMgr, cfg.virtualNodes)
 	if err != nil {

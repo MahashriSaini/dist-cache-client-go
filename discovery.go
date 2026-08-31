@@ -162,15 +162,20 @@ func (d *discovery) discoverViaRPC(endpoint string) ([]string, error) {
 // discoverViaK8sDNS resolves servers from a Kubernetes headless StatefulSet service.
 // DNS pattern: cacheserver-{N}.{service}.{namespace}.svc.cluster.local
 func (d *discovery) discoverViaK8sDNS(service, namespace string, port int) ([]string, error) {
+	resolver := dnsResolver(d.cfg.dnsServer)
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+
 	// Try SRV record first for the headless service
 	svcDNS := fmt.Sprintf("%s.%s.svc.cluster.local", service, namespace)
-	_, addrs, err := net.LookupSRV("", "", svcDNS)
+	_, addrs, err := resolver.LookupSRV(context.Background(), "", "", svcDNS)
 	if err == nil && len(addrs) > 0 {
 		return serversFromSRV(addrs), nil
 	}
 
 	// Fall back to A record lookup
-	ips, err := net.LookupHost(svcDNS)
+	ips, err := resolver.LookupHost(context.Background(), svcDNS)
 	if err != nil {
 		return nil, fmt.Errorf("k8s DNS lookup %s: %w", svcDNS, err)
 	}
@@ -246,7 +251,7 @@ func parseServerList(list string) []string {
 // DiscoverServers is a standalone function for discovering servers without creating a full client.
 // Useful for health checks and diagnostics.
 func DiscoverServers(ctx context.Context, cfg *clientConfig) ([]string, error) {
-	cm := newConnManager(2, cfg.dialTimeout, 0)
+	cm := newConnManager(2, cfg.dialTimeout, 0, dnsResolver(cfg.dnsServer))
 	defer cm.closeAll()
 
 	d := &discovery{cfg: cfg, connMgr: cm}
