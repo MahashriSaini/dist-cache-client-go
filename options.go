@@ -75,13 +75,6 @@ func WithK8sDiscovery(service, namespace string) Option {
 	}
 }
 
-// WithDNSServer routes all DNS lookups made by this client (discovery and TCP
-// dialing) to the given DNS server instead of the system resolver. Accepts an
-// IP address or host:port; port 53 is assumed when no port is given.
-func WithDNSServer(server string) Option {
-	return func(c *clientConfig) { c.dnsServer = server }
-}
-
 // WithPort sets the fallback server port (default 9065).
 func WithPort(port int) Option {
 	return func(c *clientConfig) { c.port = port }
