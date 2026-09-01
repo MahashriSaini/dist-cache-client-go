@@ -6,6 +6,7 @@ package dcache
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sort"
@@ -171,6 +172,11 @@ func (d *discovery) discoverViaK8sDNS(service, namespace string, port int) ([]st
 	svcDNS := fmt.Sprintf("%s.%s.svc.cluster.local", service, namespace)
 	_, addrs, err := resolver.LookupSRV(context.Background(), "", "", svcDNS)
 	if err == nil && len(addrs) > 0 {
+		targets := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			targets = append(targets, fmt.Sprintf("%s:%d", strings.TrimSuffix(a.Target, "."), a.Port))
+		}
+		log.Printf("IP addresses returned by dns server are %v", targets)
 		return serversFromSRV(addrs), nil
 	}
 
@@ -179,6 +185,7 @@ func (d *discovery) discoverViaK8sDNS(service, namespace string, port int) ([]st
 	if err != nil {
 		return nil, fmt.Errorf("k8s DNS lookup %s: %w", svcDNS, err)
 	}
+	log.Printf("IP addresses returned by dns server are %v", ips)
 
 	servers := make([]string, 0, len(ips))
 	for _, ip := range ips {

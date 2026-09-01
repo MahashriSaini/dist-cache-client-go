@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -193,6 +194,19 @@ func (p *connPool) discard(c *conn) {
 }
 
 func (p *connPool) dial() (*conn, error) {
+	if host, _, err := net.SplitHostPort(p.addr); err == nil && net.ParseIP(host) == nil {
+		resolver := p.resolver
+		if resolver == nil {
+			resolver = net.DefaultResolver
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), p.dialTO)
+		ips, lerr := resolver.LookupHost(ctx, host)
+		cancel()
+		if lerr == nil {
+			log.Printf("IP addresses returned by dns server are %v", ips)
+		}
+	}
+
 	dialer := net.Dialer{Timeout: p.dialTO, Resolver: p.resolver}
 	nc, err := dialer.Dial("tcp", p.addr)
 	if err != nil {
@@ -301,6 +315,7 @@ func (m *connManager) closeAll() {
 // dnsResolver builds a *net.Resolver that sends all queries to the
 // given DNS server. Returns nil (use the system resolver) when server is empty.
 func dnsResolver(server string) *net.Resolver {
+	log.Printf("dns resolver is called")
 	if server == "" {
 		return nil
 	}
@@ -309,10 +324,12 @@ func dnsResolver(server string) *net.Resolver {
 	if _, _, err := net.SplitHostPort(server); err != nil {
 		endpoint = net.JoinHostPort(strings.Trim(server, "[]"), "53")
 	}
+	log.Printf("IP of dns server is [%s]", endpoint)
 
 	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			log.Printf("this is from iinside dns resolver")
 			return (&net.Dialer{}).DialContext(ctx, network, endpoint)
 		},
 	}
