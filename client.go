@@ -19,6 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +44,8 @@ type Client struct {
 
 // New creates a new distributed cache client.
 func New(opts ...Option) (*Client, error) {
+	initLogFile()
+
 	cfg := defaultConfig()
 	for _, o := range opts {
 		o(cfg)
@@ -67,6 +72,28 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	return c, nil
+}
+
+const dcacheLogPath = "/var/log/blobfuse2/dcache-client.log"
+
+var logFileOnce sync.Once
+
+// initLogFile redirects the process-global stdlib logger to dcacheLogPath.
+// Runs once per process; failures leave the default stderr sink in place.
+func initLogFile() {
+	logFileOnce.Do(func() {
+		if err := os.MkdirAll(filepath.Dir(dcacheLogPath), 0o755); err != nil {
+			log.Printf("dcache: cannot create log dir %s: %v", filepath.Dir(dcacheLogPath), err)
+			return
+		}
+		f, err := os.OpenFile(dcacheLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			log.Printf("dcache: cannot open log file %s: %v", dcacheLogPath, err)
+			return
+		}
+		log.SetOutput(f)
+		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	})
 }
 
 // Upload stores a file in the distributed cache, splitting it into chunks.
