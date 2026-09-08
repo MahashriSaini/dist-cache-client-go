@@ -45,6 +45,14 @@ func TestDNSResolverAcceptsHostPort(t *testing.T) {
 	assert.True(t, r.PreferGo)
 }
 
+func TestWithDNSServerOverridesDefault(t *testing.T) {
+	cfg := defaultConfig()
+
+	WithDNSServer("192.0.2.53:5353")(cfg)
+
+	assert.Equal(t, "192.0.2.53:5353", cfg.dnsServer)
+}
+
 // TestDNSResolverRoutesQueriesToConfiguredServer verifies that queries made through
 // the returned resolver are sent to the configured endpoint and not to whatever
 // /etc/resolv.conf specifies.

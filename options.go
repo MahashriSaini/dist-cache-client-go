@@ -75,6 +75,13 @@ func WithK8sDiscovery(service, namespace string) Option {
 	}
 }
 
+// WithDNSServer sets the DNS server used to resolve discovery and cache server
+// hostnames. The value may be an IP address or host:port. An empty value uses
+// the system resolver.
+func WithDNSServer(server string) Option {
+	return func(c *clientConfig) { c.dnsServer = server }
+}
+
 // WithPort sets the fallback server port (default 9065).
 func WithPort(port int) Option {
 	return func(c *clientConfig) { c.port = port }
