@@ -19,9 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,14 +41,13 @@ type Client struct {
 
 // New creates a new distributed cache client.
 func New(opts ...Option) (*Client, error) {
-	initLogFile()
-
 	cfg := defaultConfig()
 	for _, o := range opts {
 		o(cfg)
 	}
 
-	connMgr := newConnManager(cfg.maxConnsPerSvr, cfg.dialTimeout, cfg.socketBufSize, dnsResolver(cfg.dnsServer))
+	resolver := dnsResolver(cfg.dnsServer)
+	connMgr := newConnManager(cfg.maxConnsPerSvr, cfg.dialTimeout, cfg.socketBufSize, resolver, dnsServerName(cfg.dnsServer))
 
 	disc, err := newDiscovery(cfg, connMgr, cfg.virtualNodes)
 	if err != nil {
@@ -72,28 +68,6 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	return c, nil
-}
-
-const dcacheLogPath = "/var/log/blobfuse2/dcache-client.log"
-
-var logFileOnce sync.Once
-
-// initLogFile redirects the process-global stdlib logger to dcacheLogPath.
-// Runs once per process; failures leave the default stderr sink in place.
-func initLogFile() {
-	logFileOnce.Do(func() {
-		if err := os.MkdirAll(filepath.Dir(dcacheLogPath), 0o755); err != nil {
-			log.Printf("dcache: cannot create log dir %s: %v", filepath.Dir(dcacheLogPath), err)
-			return
-		}
-		f, err := os.OpenFile(dcacheLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			log.Printf("dcache: cannot open log file %s: %v", dcacheLogPath, err)
-			return
-		}
-		log.SetOutput(f)
-		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	})
 }
 
 // Upload stores a file in the distributed cache, splitting it into chunks.
@@ -291,7 +265,7 @@ func (c *Client) GetChunkGroupID(ctx context.Context, filename, etag string) ([]
 		return nil, err
 	}
 
-	cn, err := c.connMgr.getConn(server)
+	cn, err := c.connMgr.getConn(ctx, server)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +380,7 @@ func (c *Client) DeleteGroup(ctx context.Context, groupID []byte) error {
 	// Group delete must be sent to all servers
 	servers := c.disc.getServers()
 	for _, server := range servers {
-		cn, err := c.connMgr.getConn(server)
+		cn, err := c.connMgr.getConn(ctx, server)
 		if err != nil {
 			continue // best-effort
 		}
@@ -453,7 +427,7 @@ func (c *Client) GetAttr(ctx context.Context, filename string) (*FileAttr, error
 		return nil, err
 	}
 
-	cn, err := c.connMgr.getConn(server)
+	cn, err := c.connMgr.getConn(ctx, server)
 	if err != nil {
 		return nil, err
 	}
@@ -533,7 +507,7 @@ func (c *Client) PutAttr(ctx context.Context, attrs []FileAttrEntry) error {
 
 	// Send to each server
 	for server, faList := range serverAttrs {
-		cn, err := c.connMgr.getConn(server)
+		cn, err := c.connMgr.getConn(ctx, server)
 		if err != nil {
 			return err
 		}
@@ -596,7 +570,7 @@ func (c *Client) Servers() []string {
 // --- Internal helpers ---
 
 func (c *Client) deleteKey(ctx context.Context, cacheKey, server string) error {
-	cn, err := c.connMgr.getConn(server)
+	cn, err := c.connMgr.getConn(ctx, server)
 	if err != nil {
 		return err
 	}

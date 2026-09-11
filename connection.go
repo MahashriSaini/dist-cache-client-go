@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -147,9 +148,10 @@ type connPool struct {
 	dialTO    time.Duration
 	sockBufSz int // SO_RCVBUF/SO_SNDBUF size (0 = system default)
 	resolver  *net.Resolver
+	dnsServer string
 }
 
-func newConnPool(addr string, maxConns int, dialTimeout time.Duration, sockBufSize int, resolver *net.Resolver) *connPool {
+func newConnPool(addr string, maxConns int, dialTimeout time.Duration, sockBufSize int, resolver *net.Resolver, dnsServer string) *connPool {
 	return &connPool{
 		addr:      addr,
 		conns:     make([]*conn, 0, maxConns),
@@ -157,11 +159,16 @@ func newConnPool(addr string, maxConns int, dialTimeout time.Duration, sockBufSi
 		dialTO:    dialTimeout,
 		sockBufSz: sockBufSize,
 		resolver:  resolver,
+		dnsServer: dnsServer,
 	}
 }
 
 // get retrieves a connection from the pool or dials a new one.
-func (p *connPool) get() (*conn, error) {
+func (p *connPool) get(ctx context.Context) (*conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", ErrConnectionFailed, p.addr, err)
+	}
+
 	p.mu.Lock()
 	if len(p.conns) > 0 {
 		c := p.conns[len(p.conns)-1]
@@ -171,7 +178,7 @@ func (p *connPool) get() (*conn, error) {
 	}
 	p.mu.Unlock()
 
-	return p.dial()
+	return p.dial(ctx)
 }
 
 // put returns a connection to the pool. If the pool is full, the connection is closed.
@@ -193,24 +200,33 @@ func (p *connPool) discard(c *conn) {
 	}
 }
 
-func (p *connPool) dial() (*conn, error) {
+func (p *connPool) dial(ctx context.Context) (*conn, error) {
+	cancel := func() {}
+	if p.dialTO > 0 {
+		ctx, cancel = context.WithTimeout(ctx, p.dialTO)
+	}
+	defer cancel()
+
+	var hostname string
 	if host, _, err := net.SplitHostPort(p.addr); err == nil && net.ParseIP(host) == nil {
-		resolver := p.resolver
-		if resolver == nil {
-			resolver = net.DefaultResolver
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), p.dialTO)
-		ips, lerr := resolver.LookupHost(ctx, host)
-		cancel()
-		if lerr == nil {
-			log.Printf("IP addresses returned by dns server are %v", ips)
-		}
+		hostname = host
 	}
 
 	dialer := net.Dialer{Timeout: p.dialTO, Resolver: p.resolver}
-	nc, err := dialer.Dial("tcp", p.addr)
+	nc, err := dialer.DialContext(ctx, "tcp", p.addr)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrConnectionFailed, p.addr, err)
+		if hostname != "" {
+			var dnsErr *net.DNSError
+			if errors.As(err, &dnsErr) {
+				log.Printf("dcache: cache server address resolution failed host=%q dns_server=%q error=%v", hostname, p.dnsServer, dnsErr)
+			} else {
+				log.Printf("dcache: cache server connection failed host=%q dns_server=%q error=%v", hostname, p.dnsServer, err)
+			}
+		}
+		return nil, fmt.Errorf("%w: %s: %w", ErrConnectionFailed, p.addr, err)
+	}
+	if hostname != "" {
+		log.Printf("dcache: cache server address resolved host=%q remote_address=%q dns_server=%q", hostname, nc.RemoteAddr(), p.dnsServer)
 	}
 
 	if tc, ok := nc.(*net.TCPConn); ok {
@@ -250,20 +266,22 @@ type connManager struct {
 	dialTO    time.Duration
 	sockBufSz int
 	resolver  *net.Resolver
+	dnsServer string
 }
 
-func newConnManager(maxConnsPerServer int, dialTimeout time.Duration, sockBufSize int, resolver *net.Resolver) *connManager {
+func newConnManager(maxConnsPerServer int, dialTimeout time.Duration, sockBufSize int, resolver *net.Resolver, dnsServer string) *connManager {
 	return &connManager{
 		pools:     make(map[string]*connPool),
 		maxConns:  maxConnsPerServer,
 		dialTO:    dialTimeout,
 		sockBufSz: sockBufSize,
 		resolver:  resolver,
+		dnsServer: dnsServer,
 	}
 }
 
 // getConn retrieves a connection to the specified server address.
-func (m *connManager) getConn(addr string) (*conn, error) {
+func (m *connManager) getConn(ctx context.Context, addr string) (*conn, error) {
 	m.mu.RLock()
 	pool, ok := m.pools[addr]
 	m.mu.RUnlock()
@@ -272,13 +290,13 @@ func (m *connManager) getConn(addr string) (*conn, error) {
 		m.mu.Lock()
 		pool, ok = m.pools[addr]
 		if !ok {
-			pool = newConnPool(addr, m.maxConns, m.dialTO, m.sockBufSz, m.resolver)
+			pool = newConnPool(addr, m.maxConns, m.dialTO, m.sockBufSz, m.resolver, m.dnsServer)
 			m.pools[addr] = pool
 		}
 		m.mu.Unlock()
 	}
 
-	return pool.get()
+	return pool.get(ctx)
 }
 
 // putConn returns a connection to its pool.
@@ -315,22 +333,27 @@ func (m *connManager) closeAll() {
 // dnsResolver builds a *net.Resolver that sends all queries to the
 // given DNS server. Returns nil (use the system resolver) when server is empty.
 func dnsResolver(server string) *net.Resolver {
-	log.Printf("dns resolver is called")
 	if server == "" {
 		return nil
 	}
 
-	endpoint := server
-	if _, _, err := net.SplitHostPort(server); err != nil {
-		endpoint = net.JoinHostPort(strings.Trim(server, "[]"), "53")
-	}
-	log.Printf("IP of dns server is [%s]", endpoint)
+	endpoint := dnsServerName(server)
+	log.Printf("dcache: custom DNS resolver configured dns_server=%q", endpoint)
 
 	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			log.Printf("this is from iinside dns resolver")
 			return (&net.Dialer{}).DialContext(ctx, network, endpoint)
 		},
 	}
+}
+
+func dnsServerName(server string) string {
+	if server == "" {
+		return "system"
+	}
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return net.JoinHostPort(strings.Trim(server, "[]"), "53")
 }

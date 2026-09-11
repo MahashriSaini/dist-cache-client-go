@@ -21,6 +21,8 @@ import dcache "github.com/nearora-msft/dist-cache-client-go"
 
 client, err := dcache.New(
     dcache.WithDiscoveryURL("http://discovery.example.com"),
+    // Optional: route cache hostname lookups through this caller-provided DNS server.
+    dcache.WithDNSServer("192.0.2.53:53"),
     dcache.WithChunkSize(16 * 1024 * 1024),
     // Store and validate a CRC32 checksum for every chunk.
     dcache.WithChecksumVerification(true),
@@ -37,8 +39,9 @@ Stable entry points consumed by callers:
 
 - `New(opts ...Option) (*Client, error)`
 - `Option` constructors: `WithDiscoveryURL`, `WithK8sDiscovery`,
-  `WithServerList`, `WithPort`, `WithChunkSize`, `WithAuth`, `WithCachePrefix`,
-    `WithMaxConnsPerServer`, `WithDiscoveryRefresh`, `WithChecksumVerification`
+  `WithDNSServer`, `WithServerList`, `WithPort`, `WithChunkSize`,
+  `WithCachePrefix`, `WithMaxConnsPerServer`, `WithDiscoveryRefresh`,
+  `WithChecksumVerification`
 - Per-call options: `UploadOption` (`WithIgnoreLock`, `WithGroupID`,
   `WithMetadata`, `WithTTL`), `DownloadOption` (`WithLock`)
 - Result/error types: `ChunkError`, `FileAttr`, `FileAttrEntry`,
@@ -47,6 +50,13 @@ Stable entry points consumed by callers:
 
 Anything not listed above is implementation detail and may change without
 notice.
+
+`WithDNSServer` accepts an IP address or `host:port`; an IP without a port uses
+port 53. If it is omitted, the system resolver is used. DNS logs identify the
+selected resolver and report whether cache server hostnames resolved, including
+the selected remote address on a successful connection. Messages use Go's
+standard logger, allowing the hosting process to route them to its configured
+log destination.
 
 ## Regenerating protobufs
 

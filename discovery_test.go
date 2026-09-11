@@ -6,7 +6,9 @@
 package dcache
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net"
 	"strings"
 	"testing"
@@ -33,24 +35,130 @@ func TestDNSResolverEmptyServerReturnsNil(t *testing.T) {
 }
 
 func TestDNSResolverNonEmptyServerReturnsResolver(t *testing.T) {
-	r := dnsResolver("10.0.0.10")
+	r := dnsResolver("192.0.2.53")
 	require.NotNil(t, r)
 	assert.True(t, r.PreferGo)
 	assert.NotNil(t, r.Dial)
 }
 
 func TestDNSResolverAcceptsHostPort(t *testing.T) {
-	r := dnsResolver("10.0.0.10:5353")
+	r := dnsResolver("192.0.2.53:5353")
 	require.NotNil(t, r)
 	assert.True(t, r.PreferGo)
 }
 
 func TestWithDNSServerOverridesDefault(t *testing.T) {
 	cfg := defaultConfig()
+	assert.Empty(t, cfg.dnsServer)
 
 	WithDNSServer("192.0.2.53:5353")(cfg)
 
 	assert.Equal(t, "192.0.2.53:5353", cfg.dnsServer)
+}
+
+func TestDNSServerNameUsesDefaultPort(t *testing.T) {
+	assert.Equal(t, "192.0.2.53:53", dnsServerName("192.0.2.53"))
+	assert.Equal(t, "192.0.2.53:5353", dnsServerName("192.0.2.53:5353"))
+	assert.Equal(t, "system", dnsServerName(""))
+}
+
+func TestConnPoolDialHonorsCanceledContext(t *testing.T) {
+	var logs bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(originalOutput)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	pool := newConnPool(
+		"cache.example.invalid:9065",
+		1,
+		time.Minute,
+		0,
+		dnsResolver("192.0.2.53"),
+		"192.0.2.53:53",
+	)
+
+	_, err := pool.dial(ctx)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.ErrorIs(t, err, ErrConnectionFailed)
+	assert.Contains(t, logs.String(), `cache server address resolution failed host="cache.example.invalid"`)
+	assert.Contains(t, logs.String(), `dns_server="192.0.2.53:53"`)
+}
+
+func TestConnPoolDialLogsResolvedRemoteAddress(t *testing.T) {
+	var logs bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(originalOutput)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	accepted := make(chan struct{})
+	go func() {
+		nc, err := listener.Accept()
+		if err == nil {
+			nc.Close()
+		}
+		close(accepted)
+	}()
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	pool := newConnPool(net.JoinHostPort("localhost", port), 1, time.Second, 0, nil, "system")
+
+	clientConn, err := pool.dial(context.Background())
+	require.NoError(t, err)
+	clientConn.close()
+	<-accepted
+
+	assert.Contains(t, logs.String(), `cache server address resolved host="localhost"`)
+	assert.Contains(t, logs.String(), `remote_address="127.0.0.1:`)
+	assert.Contains(t, logs.String(), `dns_server="system"`)
+}
+
+func TestConnPoolDialAllowsZeroTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	accepted := make(chan struct{})
+	go func() {
+		nc, err := listener.Accept()
+		if err == nil {
+			nc.Close()
+		}
+		close(accepted)
+	}()
+
+	pool := newConnPool(listener.Addr().String(), 1, 0, 0, nil, "system")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	clientConn, err := pool.dial(ctx)
+	require.NoError(t, err)
+	clientConn.close()
+	<-accepted
+}
+
+func TestK8sDNSDiscoveryHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cfg := defaultConfig()
+	cfg.dnsServer = "192.0.2.53"
+	manager := newConnManager(1, time.Minute, 0, dnsResolver(cfg.dnsServer), dnsServerName(cfg.dnsServer))
+	d := &discovery{cfg: cfg, connMgr: manager}
+
+	_, err := d.discoverViaK8sDNS(ctx, "cache", "default", defaultPort)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 // TestDNSResolverRoutesQueriesToConfiguredServer verifies that queries made through

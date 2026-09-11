@@ -16,7 +16,6 @@ const (
 	defaultVirtualNodes     = 750
 	defaultMaxMsgSize       = 10 * 1024 * 1024 // 10 MB protobuf message limit
 	defaultSocketBufSize    = 0                // 0 = kernel auto-tune (best when host tcp_rmem is tuned)
-	defaultDNSServer        = "10.0.0.10"
 )
 
 // clientConfig holds all client configuration.
@@ -50,7 +49,6 @@ func defaultConfig() *clientConfig {
 		maxParallelOps:   defaultMaxParallelOps,
 		virtualNodes:     defaultVirtualNodes,
 		socketBufSize:    defaultSocketBufSize,
-		dnsServer:        defaultDNSServer,
 	}
 }
 
